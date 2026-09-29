@@ -5,6 +5,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Annotate.h"
+#include "SignAnalysis.h"
 #include "ZeroAnalysis.h"
 
 #include "mlir/Analysis/DataFlow/ConstantPropagationAnalysis.h"
@@ -74,11 +75,63 @@ struct ZeroAnalysisPass
   }
 };
 
+struct SignAnalysisPass
+    : PassWrapper<SignAnalysisPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(SignAnalysisPass)
+
+  StringRef getArgument() const final { return "sign-analysis"; }
+
+  StringRef getDescription() const final {
+    return "Determine what is known about the sign of integer values";
+  }
+
+  void runOnOperation() override {
+    DataFlowConfig config;
+    config.setInterprocedural(false);
+
+    DataFlowSolver solver(config);
+    // Same prerequisites as ZeroAnalysisPass, for the same reasons: without
+    // reachability the solver must assume every branch is taken, and without
+    // constant propagation it cannot resolve branch conditions to prune
+    // unreachable ones.
+    solver.load<dataflow::DeadCodeAnalysis>();
+    solver.load<dataflow::SparseConstantPropagation>();
+    solver.load<sign::SignAnalysis>();
+
+    if (failed(solver.initializeAndRun(getOperation()))) {
+      getOperation().emitError("sign analysis failed to reach a fixed point");
+      return signalPassFailure();
+    }
+
+    auto describe = [&](Value value, AsmState &asmState) -> std::string {
+      const auto *lattice = solver.lookupState<sign::SignLattice>(value);
+      if (!lattice)
+        return {};
+      sign::Kind kind = lattice->getValue().kind;
+      // Top and bottom say nothing; printing them would bury the real facts.
+      if (kind == sign::Kind::Top || kind == sign::Kind::Bottom)
+        return {};
+      std::string description;
+      llvm::raw_string_ostream os(description);
+      value.printAsOperand(os, asmState);
+      os << " is " << sign::name(kind);
+      return description;
+    };
+
+    zero::printAnnotated(getOperation(), describe, llvm::errs());
+
+    // This pass only reads.
+    markAllAnalysesPreserved();
+  }
+};
+
 } // namespace
 
 extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo mlirGetPassPluginInfo() {
   // LLVM_VERSION_STRING is baked in at compile time and checked by mlir-opt at
   // load time, which is what turns an ABI mismatch into a clear diagnostic.
-  return {MLIR_PLUGIN_API_VERSION, "ZeroAnalysis", LLVM_VERSION_STRING,
-          []() { PassRegistration<ZeroAnalysisPass>(); }};
+  return {MLIR_PLUGIN_API_VERSION, "ZeroAnalysis", LLVM_VERSION_STRING, []() {
+            PassRegistration<ZeroAnalysisPass>();
+            PassRegistration<SignAnalysisPass>();
+          }};
 }

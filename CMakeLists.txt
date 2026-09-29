@@ -101,6 +101,7 @@ add_definitions(${LLVM_DEFINITIONS})
 #===----------------------------------------------------------------------===#
 add_llvm_library(ZeroAnalysis MODULE PARTIAL_SOURCES_INTENDED
   ZeroAnalysis.cpp
+  SignAnalysis.cpp
   Annotate.cpp
   Plugin.cpp
   PLUGIN_TOOL mlir-opt
