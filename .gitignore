@@ -67,3 +67,12 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Generated analysis input (see README.md "Getting an input" for how to
+# regenerate these). Multi-hundred-MB IR dumps and vendored source trees
+# don't belong in a pedagogical repo; the curated, small excerpts that
+# matter are checked in under examples/ instead.
+sql.mlir
+sql.zip
+sqlamal.tar.gz
+sqlite-snapshot-*/
