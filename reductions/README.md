@@ -1,19 +1,20 @@
 # llvm-reduce reductions
 
-Three `llvm-reduce` runs, each driven by an interestingness test that
-converts its candidate `.ll` to MLIR (`mlir-translate --import-llvm`) and
-checks whether one of this repo's passes computes a specific, non-trivial
-fact about it — not just "some constant has a known sign/zero-ness," which
-would be the "the constant 4 is even" triviality the assignment warns
-against. Each test targets a different mechanism in the analyses, and each
-is constructed so that only that mechanism can make the grep pattern match
-(reasoning is in each script's header comment).
+Three `llvm-reduce` runs, all against **`sign-analysis`**, each driven by an
+interestingness test that converts its candidate `.ll` to MLIR
+(`mlir-translate --import-llvm`) and checks whether `sign-analysis` computes
+a specific, non-trivial fact about it — not just "some constant has a known
+sign," which would be the "the constant 4 is even" triviality the assignment
+warns against. Each test targets a *different* mechanism inside
+`SignAnalysis.cpp`/`SignDomain.h`, and each is constructed so that only that
+mechanism can make the grep pattern match (reasoning is in each script's
+header comment).
 
-| # | Pass | Mechanism exercised | What the test greps for |
-|---|---|---|---|
-| 1 | `zero-analysis` | `ZeroAnalysis.cpp`'s AND-with-zero propagation rule | an `llvm.and` result proved `zero`, where one operand is still a live function argument (not foldable to a lone constant) |
-| 2 | `sign-analysis` | `mulRule`'s `x*1` identity-preservation fast path | an `llvm.mul` result annotated `is one` — the generic sign-product table can *only* construct `Neg`/`Zero`/`Pos`, never `One`, so this can only come from the fast path handing back an already-`One` operand |
-| 3 | `sign-analysis` | the lattice `join()` itself, across control flow | a block **argument** (former phi node) annotated `is nonpositive`, from merging a `Neg` edge and a `Zero` edge — a fact no single transfer rule produces, only MLIR's dataflow framework joining the two incoming edges |
+| # | Mechanism exercised | What the test greps for |
+|---|---|---|
+| 1 | `addRule`'s generic table combining two operands that are *themselves* already combined facts | an `llvm.add` result annotated `is nonnegative` — hand-verified that a single real branch merge isn't enough (`NonNeg + Pos` tightens to plain `Pos`), so both operands must carry a combined fact into the `add` |
+| 2 | `mulRule`'s `x*1` identity-preservation fast path | an `llvm.mul` result annotated `is one` — the generic sign-product table can *only* construct `Neg`/`Zero`/`Pos`, never `One`, so this can only come from the fast path handing back an already-`One` operand |
+| 3 | the lattice `join()` itself, across control flow | a block **argument** (former phi node) annotated `is nonpositive`, from merging a `Neg` edge and a `Zero` edge — a fact no single transfer rule produces, only MLIR's dataflow framework joining the two incoming edges |
 
 Reproduce any of them:
 
@@ -23,7 +24,7 @@ cd reductions
 llvm-reduce --test=./testN.sh inputN.ll   # writes reduced.ll
 mlir-translate --import-llvm reduced.ll \
   | mlir-opt --load-pass-plugin=../build/ZeroAnalysis.dylib \
-             --pass-pipeline='builtin.module(zero-analysis)' \  # or sign-analysis, see table
+             --pass-pipeline='builtin.module(sign-analysis)' \
              - 2>&1 1>/dev/null            # the annotated listing, i.e. reducedN.mlir
 ```
 
@@ -32,15 +33,25 @@ top-level README.)
 
 ## Results
 
-**Target 1** — `input1.ll` has a dead-code-laden function; `and i32 %flags, 0`
-survives because `%flags` must remain a free argument for the test to keep
-matching. Reduced to:
+**Target 1** — `input1.ll` merges two `if`/`else`s, each into `NonNeg`, then
+adds the results. llvm-reduce found it only needs to keep *one* real merge
+(`NonNeg`) and fold the other side to a literal `0` (`Zero`) — `addRule`
+still lands on `NonNeg` for `NonNeg + Zero`, a case consistent with the same
+mechanism (the generic table combining a combined fact with another operand,
+rather than tightening or collapsing to `Top`):
 
 ```llvm
-define i32 @check_flag(i32 %flags) {
+define i32 @sum_of_two_merges() {
 entry:
-  %masked = and i32 %flags, 0
-  ret i32 %masked
+  br i1 false, label %m1, label %f1
+
+f1:
+  br label %m1
+
+m1:
+  %a = phi i32 [ 1, %f1 ], [ 0, %entry ]
+  %sum = add i32 %a, 0
+  ret i32 %sum
 }
 ```
 

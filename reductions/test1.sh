@@ -2,16 +2,13 @@
 # Interestingness test for llvm-reduce (target 1).
 #
 # Interesting: after converting the .ll on the command line to MLIR and
-# running zero-analysis, the output contains an `llvm.and` result that the
-# analysis proves "is zero" -- i.e. the AND-with-zero propagation rule fired,
-# not just the constant-introduction rule. (zero-analysis annotates a plain
-# `llvm.mlir.constant(0)` as zero too, but that alone is the trivial "the
-# constant 4 is even" case; requiring the fact to land on an `llvm.and`
-# result specifically forces llvm-reduce to keep actual propagation, not
-# just a lone zero constant.) The `and` must also still take a function
-# argument (`%argN`) as an operand, so llvm-reduce can't satisfy this by
-# collapsing everything down to `and i32 0, 0` -- the point is that the
-# analysis proves this without ever knowing the argument's value.
+# running sign-analysis, the output contains an `llvm.add` result the
+# analysis proves "is nonnegative". SignAnalysis.cpp's generic addRule
+# table only lands on NonNeg when *both* operands already admit {Zero,
+# Pos} simultaneously (hand-verified: NonNeg + Pos tightens to plain Pos,
+# not NonNeg) -- so this can only be satisfied by combining two already
+# "nonnegative" facts through addRule, not by reading a literal, not by
+# mulRule's x*1 fast path, and not by a bare join with no arithmetic.
 #
 # Usage: ./test1.sh input.ll ; echo $?   -> prints 0 when interesting.
 set -eu
@@ -35,6 +32,6 @@ trap 'rm -f "$MLIR"' EXIT
 mlir-translate --import-llvm "$IN" >"$MLIR" 2>/dev/null || exit 1
 
 mlir-opt --load-pass-plugin="$PLUGIN" \
-         --pass-pipeline='builtin.module(zero-analysis)' \
+         --pass-pipeline='builtin.module(sign-analysis)' \
          "$MLIR" 2>&1 1>/dev/null \
-  | grep -Eq 'llvm\.and .*%arg[0-9]+.*// %[A-Za-z0-9_]+ is zero'
+  | grep -Eq 'llvm\.add .*// %[A-Za-z0-9_]+ is nonnegative'

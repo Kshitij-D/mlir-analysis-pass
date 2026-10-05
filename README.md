@@ -195,7 +195,7 @@ an analysis with exactly one rule for AND and about 120 lines of code total.
 | `Plugin.cpp` | Both passes, their solver setup, and the `mlir-opt` entry point. |
 | `cmake/RunTest.cmake` | The test runner. |
 | `examples/` | Small, checked-in inputs and annotated outputs, referenced above. |
-| [`reductions/`](reductions/) | Three `llvm-reduce` runs (interestingness tests + inputs + reduced, annotated output), one per distinct mechanism: the AND-with-zero rule, the `x*1` identity fast path, and cross-branch lattice `join()`. |
+| [`reductions/`](reductions/) | Three `llvm-reduce` runs against `sign-analysis` (interestingness tests + inputs + reduced, annotated output), one per distinct mechanism: `addRule` combining two already-combined facts, the `x*1` identity fast path, and cross-branch lattice `join()`. |
 
 To build a different analysis, copy the shape of `SignDomain.h` +
 `SignAnalysis.{h,cpp}`, or replace `ZeroDomain.h` + `ZeroAnalysis.cpp`
