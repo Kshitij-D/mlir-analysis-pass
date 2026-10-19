@@ -5,11 +5,13 @@
 //===----------------------------------------------------------------------===//
 
 #include "Annotate.h"
+#include "Instrument.h"
 #include "SignAnalysis.h"
 #include "ZeroAnalysis.h"
 
 #include "mlir/Analysis/DataFlow/ConstantPropagationAnalysis.h"
 #include "mlir/Analysis/DataFlow/DeadCodeAnalysis.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
@@ -26,6 +28,19 @@ namespace {
 struct ZeroAnalysisPass
     : PassWrapper<ZeroAnalysisPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ZeroAnalysisPass)
+
+  ZeroAnalysisPass() = default;
+  ZeroAnalysisPass(const ZeroAnalysisPass &other) : PassWrapper(other) {}
+
+  Option<bool> instrument{
+      *this, "instrument",
+      llvm::cl::desc("Instead of printing facts, insert a runtime check for "
+                     "each one (see Instrument.h)"),
+      llvm::cl::init(false)};
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<LLVM::LLVMDialect>();
+  }
 
   StringRef getArgument() const final { return "zero-analysis"; }
 
@@ -51,6 +66,23 @@ struct ZeroAnalysisPass
     }
 
     // Query states only now that the solver has converged.
+    if (instrument) {
+      zero::instrument(getOperation(), [&](Value value) -> std::optional<zero::Fact> {
+        const auto *lattice = solver.lookupState<zero::ZeroLattice>(value);
+        if (!lattice)
+          return std::nullopt;
+        switch (lattice->getValue().kind) {
+        case zero::Kind::Zero:
+          return zero::Fact{LLVM::ICmpPredicate::eq, 0, "zero"};
+        case zero::Kind::NonZero:
+          return zero::Fact{LLVM::ICmpPredicate::ne, 0, "nonzero"};
+        default:
+          return std::nullopt;
+        }
+      });
+      return;
+    }
+
     auto describe = [&](Value value, AsmState &asmState) -> std::string {
       const auto *lattice = solver.lookupState<zero::ZeroLattice>(value);
       if (!lattice)
@@ -79,6 +111,19 @@ struct SignAnalysisPass
     : PassWrapper<SignAnalysisPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(SignAnalysisPass)
 
+  SignAnalysisPass() = default;
+  SignAnalysisPass(const SignAnalysisPass &other) : PassWrapper(other) {}
+
+  Option<bool> instrument{
+      *this, "instrument",
+      llvm::cl::desc("Instead of printing facts, insert a runtime check for "
+                     "each one (see Instrument.h)"),
+      llvm::cl::init(false)};
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<LLVM::LLVMDialect>();
+  }
+
   StringRef getArgument() const final { return "sign-analysis"; }
 
   StringRef getDescription() const final {
@@ -101,6 +146,34 @@ struct SignAnalysisPass
     if (failed(solver.initializeAndRun(getOperation()))) {
       getOperation().emitError("sign analysis failed to reach a fixed point");
       return signalPassFailure();
+    }
+
+    if (instrument) {
+      zero::instrument(getOperation(), [&](Value value) -> std::optional<zero::Fact> {
+        const auto *lattice = solver.lookupState<sign::SignLattice>(value);
+        if (!lattice)
+          return std::nullopt;
+        using P = LLVM::ICmpPredicate;
+        switch (lattice->getValue().kind) {
+        case sign::Kind::Neg:
+          return zero::Fact{P::slt, 0, "negative"};
+        case sign::Kind::Zero:
+          return zero::Fact{P::eq, 0, "zero"};
+        case sign::Kind::One:
+          return zero::Fact{P::eq, 1, "one"};
+        case sign::Kind::Pos:
+          return zero::Fact{P::sgt, 0, "positive"};
+        case sign::Kind::NonPos:
+          return zero::Fact{P::sle, 0, "nonpositive"};
+        case sign::Kind::NonZero:
+          return zero::Fact{P::ne, 0, "nonzero"};
+        case sign::Kind::NonNeg:
+          return zero::Fact{P::sge, 0, "nonnegative"};
+        default:
+          return std::nullopt;
+        }
+      });
+      return;
     }
 
     auto describe = [&](Value value, AsmState &asmState) -> std::string {
